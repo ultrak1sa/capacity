@@ -1,0 +1,97 @@
+version: '3.7'
+
+services:
+  postgres:
+    image: postgres:13
+    container_name: postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
+
+  clickhouse-server:
+    image: clickhouse/clickhouse-server:latest
+    container_name: clickhouse-server
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+
+  airflow:
+    build:
+      context: ./airflow
+      dockerfile: Dockerfile
+    container_name: airflow
+    depends_on:
+      - postgres
+    ports:
+      - "8080:8080"
+    environment:
+      AIRFLOW__CORE__EXECUTOR: ${AIRFLOW_EXECUTOR}
+      AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW__CORE__FERNET_KEY}
+      AIRFLOW__CORE__LOAD_EXAMPLES: ${AIRFLOW_LOAD_EXAMPLES}
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: ${AIRFLOW_SQL_ALCHEMY_CONN}
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./airflow/logs:/opt/airflow/logs
+      - ./airflow/plugins:/opt/airflow/plugins
+      - ./logs/synthetic_logs:/opt/airflow/logs/synthetic_logs
+    command: >
+      bash -c "
+        airflow db init &&
+        (airflow users create --username admin --password admin --firstname Admin --lastname User --role Admin --email admin@example.com || echo 'Admin user already exists') &&
+        airflow webserver
+      "
+
+  airflow-scheduler:
+    build:
+      context: ./airflow
+      dockerfile: Dockerfile
+    container_name: airflow-scheduler
+    depends_on:
+      - postgres
+    environment:
+      AIRFLOW__CORE__EXECUTOR: ${AIRFLOW_EXECUTOR}
+      AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW__CORE__FERNET_KEY}
+      AIRFLOW__CORE__LOAD_EXAMPLES: ${AIRFLOW_LOAD_EXAMPLES}
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: ${AIRFLOW_SQL_ALCHEMY_CONN}
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./airflow/logs:/opt/airflow/logs
+      - ./airflow/plugins:/opt/airflow/plugins
+    command: airflow scheduler
+
+  superset:
+    build:
+      context: ./superset
+      dockerfile: Dockerfile
+    container_name: superset
+    depends_on:
+      - postgres
+    ports:
+      - "8088:8088"
+    environment:
+      SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY}
+      SUPERSET_CONFIG_PATH: ${SUPERSET_CONFIG_PATH}
+      SUPERSET_SQLALCHEMY_DATABASE_URI: ${SUPERSET_SQLALCHEMY_DATABASE_URI}
+    volumes:
+      - ./superset/superset_config.py:/capacity/superset/superset_config.py
+    command: >
+      /bin/bash -c "superset db upgrade && \
+      (superset fab create-admin --username admin --firstname Admin --lastname User --email admin@example.com --password admin || echo 'Admin user already exists') && \
+      superset init && \
+      gunicorn --bind 0.0.0.0:8088 --workers 3 'superset.app:create_app()'"
+
+volumes:
+  clickhouse-data:
+  postgres-data:
+
